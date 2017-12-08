@@ -1,28 +1,41 @@
+#!/usr/bin/python
 # -*- coding: utf-8 -*-
 import requests
 import urllib.request
 import io
 import json
-from helpers import utf8text
+import logging
+import cgi, cgitb 
+import datetime
 
-from lxml import html
+from lxml import html,etree
 from pdfminer.pdfparser import PDFParser, PDFDocument
 from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
 from pdfminer.converter import PDFPageAggregator
 from pdfminer.layout import LAParams, LTTextBox, LTTextLine
 from docx import Document
 
-week_number = 0
+week_number = week_number = datetime.datetime.utcnow().isocalendar()[1]
 lastWeek = "0"
+daySearch = "fredag"
 
+def getNextDay(day) :
+    daysInWeek = [u'måndag', 'tisdag', 'onsdag', 'torsdag', 'fredag']
+    retval = day
+    getNext = False
+    for weekDay in daysInWeek :
+        if getNext :
+            retval = weekDay
+            break
+        if weekDay == day :
+            getNext = True
+    return retval
+
+def utf8text(text):
+        return text.encode('raw_unicode_escape').decode('utf-8')
 
 def parse_vecka():
-    answer = requests.get('http://www.vecka.nu')
-    root = html.fromstring(answer.text)
-    for child in root.xpath('//time'):
-        global week_number
-        week_number = child.text
-        lastWeek = "52" if week_number == "1" else str(int(week_number) - 1) 
+    # week_number = datetime.datetime.utcnow().isocalendar()[1]
     return 'Det är nu vecka %s' % week_number
 
 def parse_kompassen():
@@ -30,10 +43,13 @@ def parse_kompassen():
     answer = requests.get('http://www.restaurangkompassen.se/index.php?option=com_content&view=article&id=64&Itemid=66')
     root = html.fromstring(answer.text)
     friday_found = False
+    nextDay = getNextDay(daySearch)
     for child in root.xpath('//div[@class="screen"]/div/div/div'):
         if friday_found and child.text:
+            if nextDay != daySearch and nextDay in child.text.lower() :
+               break
             ret += child.text
-        elif child.text and "fredag" in child.text.lower():
+        elif child.text and daySearch in child.text.lower():
             friday_found = True
     return ret
 
@@ -42,10 +58,13 @@ def parse_teknikparken():
     answer = requests.get('http://www.restaurangteknikparken.se/index.php?option=com_content&view=article&id=46')
     root = html.fromstring(answer.text)
     friday_found = False
+    nextDay = getNextDay(daySearch)
     for child in root.xpath('//div[@class="screen"]/div/div/div'):
         if friday_found and child.text:
+            if nextDay != daySearch and nextDay in child.text.lower() :
+                break
             ret += child.text
-        elif child.text and "fredag" in child.text.lower():
+        elif child.text and daySearch in child.text.lower():
             friday_found = True
     return ret
 
@@ -58,12 +77,40 @@ def parse_gs():
         ret += child.text_content()
     return ret
 
+def parse_sop():
+    ret = "### Resturang Salt & Peppar ###" + "\n"
+    answer = requests.get('http://www.restaurangsaltopeppar.com/Lunchmeny.html')
+    root = html.fromstring(answer.text)
+    parent = root
+    DayFound = False
+    BrCC = 0
+    for child in root.xpath('//div[@align="center"]'):
+        for span in child :
+            if not DayFound :
+                if span.tag == "span" and span.get("class") == "text-class-10" and daySearch in span.text.lower() :
+                    DayFound = True
+            else :
+                if BrCC < 2 and span.tag == "span" :
+                    if span.get("class") == "text-class-10" :
+                        BrCC = 3
+                    else :
+                        BrCC = 0
+                        if span.text :
+                            ret += span.text + '\n'
+                elif BrCC < 2 and span.tag == "br" :
+                    BrCC += 1
+
+                if BrCC >= 2 :
+                   break;
+
+    return ret
+
 def parse_hemlingby():
     ret = "### HEMLINGBY ###" + "\n"
     answer = requests.get('http://www.gavle.se/Uppleva--gora/Idrott-motion-och-friluftsliv/Friluftsliv-och-motion/Hemlingby-friluftsomrade/Hemlingbystugan/Fika-och-ata/')
     root = html.fromstring(answer.text)
     for child in root.xpath('//a'):
-        if child.text and "meny vecka" in child.text.lower() and week_number in child.text.lower():
+        if child.text and "meny vecka" in child.text.lower() and str(week_number) in child.text.lower():
             hemlingby_link='http://www.gavle.se' + child.get('href')
             break
     textAsArray = parse_pdf(hemlingby_link)
@@ -73,6 +120,8 @@ def parse_hemlingby():
 #Takes url to pdf file and returns text split on newline into array
 def parse_pdf(pdf_url):
 
+    logging.propagate = False 
+    logging.getLogger().setLevel(logging.ERROR)
     remote_file = urllib.request.urlopen(pdf_url).read()
     memory_file = io.BytesIO(remote_file)
     parser = PDFParser(memory_file)
@@ -105,11 +154,11 @@ def getFoodFromPDFArray(pdfArray):
     for page in pdfArray:
         for idx, line in enumerate(page):
             #Check if correct week
-            if ("vecka " +  week_number + ":") in line[0]:
+            if ("vecka " + str(week_number) + ":") in line[0]:
                 correctWeek = True;
                 continue;
             #If correct week and day is fredag
-            elif correctWeek and "fredag" in line[0].lower():
+            elif correctWeek and daySearch in line[0].lower():
 
                 #If the line is bigger than 1 it contains the food after 'fredag'
                 if len(line) > 1:
@@ -134,7 +183,7 @@ def parse_gustafsbro():
     #Get friday from table
     for weekdayTable in root.xpath('//body/font/table/tr[1]/td[1]/div/table'):
         for day in weekdayTable.xpath('tr[1]/td[1]/font/strong'):
-            if day.text and "fredag" in day.text.lower():
+            if day.text and daySearch in day.text.lower():
                 friday_found = True
                 break
 
@@ -155,7 +204,7 @@ def parse_sodersKalla():
 
     #Get url for menu
     for child in root.xpath('//a'):
-        if child.text and ("lunchmeny v" + week_number) in child.text.lower():
+        if child.text and ("lunchmeny v" + str(week_number)) in child.text.lower():
             url = child.get('href')
             break
         #Check if menu has been updated from the week before
@@ -163,20 +212,23 @@ def parse_sodersKalla():
              ret += "Menyn har ännu inte blivit uppdaterad"
 
     #Fetch document
-    answer = requests.get(url)
-    memory_file = io.BytesIO(answer.content)
-    doc = Document(memory_file)
+    if url : 
+        if not url.startswith('http:') :
+            url = 'http:' + url
+        answer = requests.get(url)
+        memory_file = io.BytesIO(answer.content)
+        doc = Document(memory_file)
 
-    food = ""
-    #Parse document and look for fredag, food is in the index after fredag
-    for idx, para in enumerate(doc.paragraphs):
-        if "fredag" in para.text.lower():
-            food = doc.paragraphs[idx+1].text + "\n"
+        food = ""
+        #Parse document and look for fredag, food is in the index after fredag
+        for idx, para in enumerate(doc.paragraphs):
+            if daySearch in para.text.lower():
+                food = doc.paragraphs[idx+1].text + "\n"
 
-    if food:
-        ret += food
-    else:
-        ret += "Oops something went wrong"
+        if food:
+            ret += food
+        else:
+            ret += "Oops something went wrong"
     return ret
 
 def parse_koket():
@@ -189,14 +241,14 @@ def parse_koket():
 
     for line in root.xpath('//p/span'):
        #Get friday from table
-        if line.text and "fredag" in line.text.lower():
+        if line.text and daySearch in line.text.lower():
                 friday_found = True
 
         if friday_found:
             if line.text.strip():
                 #Fix encodings and remove '-' in the beginning of the different foods
                 #Removed "fredag" printout to look more like the other printouts //Robert
-                if "fredag" in utf8text(line.text).lower():
+                if daySearch in utf8text(line.text).lower():
                     pass
                     #ret += utf8text(line.text) + "\n"
                 elif "stängt" in utf8text(line.text).lower():
@@ -217,12 +269,15 @@ def parse_kryddan():
     root = html.fromstring(answer.text)
     friday_found = False
     food = ""
+    nextDay = getNextDay(daySearch)
     for child in root.xpath('//div[@id="veckans"]'):
         lines = child.text_content().split("\n")
         for line in lines:
             if friday_found and child.text:
+                if nextDay != daySearch and nextDay in line.lower() :
+                    break
                 food += line + "\n"
-            elif line and "fredag" in line.lower():
+            elif line and daySearch in line.lower():
                 friday_found = True
     if food:
         ret += food
@@ -230,31 +285,76 @@ def parse_kryddan():
         ret += "Oops something went wrong"
     return ret
 
-def get_json_encode():
+def get_jsonMenu(resturant):
     
     vecka = parse_vecka()
-    teknikparken = parse_teknikparken()
-    kompassen= parse_kompassen()
-    hemlingby = parse_hemlingby()
-    gs = parse_gs()
-    gustafsbro= parse_gustafsbro()
-    sodersKalla = parse_sodersKalla()
-    koket = parse_koket()
-    kryddan = parse_kryddan()
-    
-    return json.dumps({'vecka':week_number, 'teknikparken':teknikparken, 'kompassen':kompassen, 'hemlingby':hemlingby, 'gs':gs, 'gustafsbro':gustafsbro, 'sodersKalla':sodersKalla, 'koket':koket, 'kryddan':kryddan})
+    restList = []
+    if resturant == "teknikparken" :
+        teknikparken = parse_teknikparken()
+        restList.append({'restuarang':resturant, 'meny':teknikparken})
+    elif resturant == "kompassen" :
+        kompassen= parse_kompassen()
+        restList.append({'restuarang':resturant,'meny':kompassen})
+    elif resturant == "hemlingby" :
+        hemlingby = parse_hemlingby()
+        restList.append({'restuarang':resturant, 'meny':hemlingby})
+    elif resturant == "gs" :
+        gs = parse_gs()
+        restList.append({'restuarang':resturant, 'meny':gs})
+    elif resturant == "gustafsbro" :
+        gustafsbro= parse_gustafsbro()
+        restList.append({'restuarang':resturant, 'meny':gustafsbro})
+    elif resturant == "soderskalla" :
+        sodersKalla = parse_sodersKalla()
+        restList.append({'restuarang':resturant, 'meny':soderskalla})
+    elif resturant == "koket" :
+        koket = parse_koket()
+        restList.append({'restuarang':resturant, 'meny':koket})
+    elif resturant == "kryddan" :
+        kryddan = parse_kryddan()
+        restList.append({'restuarang':resturant, 'meny':kryddan})
+    elif resturant == "sop" :
+        sop = parse_sop()
+        restList.append({'restuarang':resturant, 'meny':sop})
+    else :
+        teknikparken = parse_teknikparken()
+        kompassen= parse_kompassen()
+        hemlingby = parse_hemlingby()
+        gs = parse_gs()
+        gustafsbro= parse_gustafsbro()
+        sodersKalla = parse_sodersKalla()
+        koket = parse_koket()
+        kryddan = parse_kryddan()
+        sop = parse_sop()
+        restList = [{'restuarang': 'teknikparken', 'meny':teknikparken}, {'restuarang':'kompassen', 'meny':kompassen}, {'restuarang':'hemlingby', 'meny':hemlingby}, {'restuarang':'gs', 'meny':gs}, {'restuarang':'gustafsbro', 'meny':gustafsbro}, {'restuarang':'sodersKalla', 'meny':sodersKalla}, {'restuarang':'koket', 'meny':koket}, {'restuarang':'kryddan', 'meny':kryddan}, {'restuarang':'sop', 'meny':sop}]
+
+    json_string = {'vecka':str(week_number), 'dag':daySearch, 'restuaranger':restList}
+    return json.dumps(json_string)
+
+def get_jsonResturants():
+    json_resturants = {'restuaranger':[{'restuarang': 'teknikparken', 'text':'Teknikparken'}, {'restuarang':'kompassen', 'text': 'Kompassen'}, {'restuarang':'hemlingby', 'text':'Hemlingby'}, {'restuarang':'gs', 'text':'Gourmetservice'}, {'restuarang':'gustafsbro', 'text':'Gustafsbro'}, {'restuarang':'sodersKalla', 'text':'Söders Källa'}, {'restuarang':'koket', 'text':'Köket'}, {'restuarang':'kryddan', 'text':'Kryddan'}, {'restuarang':'sop', 'text':'Salt & Peppar'}]}
+    return json.dumps(json_resturants)
+
+def get_commandHelp() :
+    json_help = {'commands':[{'name':'restuaranger', 'description':'Returns resturants in Swedish'},{'name':'menu', 'description':'Returns menus for all resturants, if parameter <resturant> with value of any resturant it will return that resturants menu. If paramater <dag> is set to any day [måndag,tisdag,onsdag,torsdag,fredag] it will return that day.'}]}
+    return json.dumps(json_help)
 
 def main():
-    parse_vecka()
-    print("\n" +
-    parse_teknikparken() + "\n" +
-    parse_kompassen() + "\n" +
-    parse_hemlingby() + "\n" +
-    parse_gs()+ "\n" +
-    parse_gustafsbro() + "\n" +
-    parse_sodersKalla() + "\n" +
-    parse_koket() + "\n" +
-    parse_kryddan())
+    print("Content-Type: application/json\n\n")
+    form = cgi.FieldStorage()
+    command = form.getvalue("command")
+    if command == "restuaranger" :
+        print(get_jsonResturants())
+    elif command == "menu" : 
+        rest = form.getvalue("resturant")
+        if form.getvalue("dag") :
+            global daySearch
+            daySearch = form.getvalue("dag")
+        print(get_jsonMenu(rest))
+    else :
+        print(get_commandHelp())
+
+    return
     
 if __name__ == '__main__':
     main()
